@@ -4,7 +4,7 @@
 #include <vector>
 #include <thread>
 #include <mutex>
-#include <ctime>
+#include <fstream>
 
 #pragma comment(lib, "ws2_32.lib")
 using namespace std;
@@ -14,26 +14,12 @@ struct ClientInfo {
     string password;
     string ip;
     int port;
+    int color;
     SOCKET socket;
 };
 
 vector<ClientInfo> clients;
 mutex mtx;
-
-string getTime() {
-    time_t now = time(0);
-    tm t;
-    localtime_s(&t, &now);
-    char buf[10];
-    strftime(buf, sizeof(buf), "%H:%M:%S", &t);
-    return string(buf);
-}
-
-void broadcast(string msg) {
-    lock_guard<mutex> lock(mtx);
-    for (auto& c : clients)
-        send(c.socket, msg.c_str(), msg.size(), 0);
-}
 
 void handleClient(SOCKET sock, sockaddr_in addr) {
     char buffer[512];
@@ -44,23 +30,45 @@ void handleClient(SOCKET sock, sockaddr_in addr) {
     string login = auth.substr(0, auth.find(':'));
     string pass = auth.substr(auth.find(':') + 1);
 
-    {
-        lock_guard<mutex> lock(mtx);
-        clients.push_back({ login, pass, "", 0, sock });
+    int color;
+    recv(sock, (char*)&color, sizeof(color), 0);
+
+    bool returning = false;
+    ifstream in("clients.txt");
+
+    string l, p, ipf;
+    int portf;
+
+    while (in >> l >> p >> ipf >> portf) {
+        if (l == login && p == pass)
+            returning = true;
+    }
+    in.close();
+
+    if (!returning) {
+        ofstream out("clients.txt", ios::app);
+        out << login << " " << pass << " 0 0\n";
+        out.close();
+    }
+    else {
+        string msg = "Welcome back, " + login + "\n";
+        send(sock, msg.c_str(), msg.size(), 0);
     }
 
-    string join = login + " connected\n";
-    broadcast(join);
+    {
+        lock_guard<mutex> lock(mtx);
+        clients.push_back({ login, pass, "", 0, color, sock });
+    }
 
     while (true) {
         int bytes = recv(sock, buffer, 512, 0);
         if (bytes <= 0) break;
 
         string msg(buffer, bytes);
-        string full = "[" + getTime() + "] " + login + ": " + msg + "\n";
+        string full = login + ": " + msg + "\n";
 
-        cout << full;
-        broadcast(full);
+        for (auto& c : clients)
+            send(c.socket, full.c_str(), full.size(), 0);
     }
 
     closesocket(sock);
