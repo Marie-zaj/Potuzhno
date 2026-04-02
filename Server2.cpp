@@ -7,6 +7,8 @@
 #include <mutex>
 #include <fstream>
 #include <ctime>
+#include <algorithm>
+#include <string>
 
 #pragma comment(lib, "ws2_32.lib")
 using namespace std;
@@ -16,6 +18,7 @@ struct ClientInfo {
     string password;
     int color;
     SOCKET socket;
+    time_t connectTime;
 };
 
 vector<ClientInfo> clients;
@@ -30,8 +33,26 @@ string getTime() {
     return string(buf);
 }
 
+string formatDuration(time_t seconds) {
+    int h = seconds / 3600;
+    int m = (seconds % 3600) / 60;
+    int s = seconds % 60;
+
+    char buf[20];
+    sprintf_s(buf, "%02d:%02d:%02d", h, m, s);
+    return string(buf);
+}
+
 void broadcast(string msg) {
     lock_guard<mutex> lock(mtx);
+    for (auto& c : clients) {
+        send(c.socket, msg.c_str(), msg.size(), 0);
+    }
+}
+
+void sendClientCount() {
+    lock_guard<mutex> lock(mtx);
+    string msg = "CLIENTS:" + to_string(clients.size());
     for (auto& c : clients) {
         send(c.socket, msg.c_str(), msg.size(), 0);
     }
@@ -40,7 +61,6 @@ void broadcast(string msg) {
 void handleClient(SOCKET sock) {
     char buffer[512];
 
-    // авторизация
     int len = recv(sock, buffer, 512, 0);
     if (len <= 0) return;
 
@@ -51,7 +71,6 @@ void handleClient(SOCKET sock) {
     int color;
     recv(sock, (char*)&color, sizeof(color), 0);
 
-    // проверка файла
     bool returning = false;
     ifstream in("clients.txt");
 
@@ -74,8 +93,10 @@ void handleClient(SOCKET sock) {
 
     {
         lock_guard<mutex> lock(mtx);
-        clients.push_back({ login, pass, color, sock });
+        clients.push_back({ login, pass, color, sock, time(0) });
     }
+
+    sendClientCount();
 
     string join = login + " connected [" + getTime() + "]\n";
     cout << join;
@@ -86,8 +107,21 @@ void handleClient(SOCKET sock) {
         if (bytes <= 0) break;
 
         string msg(buffer, bytes);
-        string full = "[" + getTime() + "] " + login + ": " + msg + "\n";
 
+        /*if (msg == "info") {
+            lock_guard<mutex> lock(mtx);
+
+            cout << "===============\n";
+            for (auto& c : clients) {
+                time_t now = time(0);
+                cout << c.login << " - "
+                    << formatDuration(now - c.connectTime) << "\n";
+            }
+            cout << "===============\n";
+            continue;
+        }*/
+
+        string full = "[" + getTime() + "] " + login + ": " + msg + "\n";
         cout << full;
         broadcast(full);
     }
@@ -95,6 +129,15 @@ void handleClient(SOCKET sock) {
     string left = login + " disconnected [" + getTime() + "]\n";
     cout << left;
     broadcast(left);
+
+    {
+        lock_guard<mutex> lock(mtx);
+        clients.erase(remove_if(clients.begin(), clients.end(),
+            [sock](ClientInfo& c) { return c.socket == sock; }),
+            clients.end());
+    }
+
+    sendClientCount();
 
     closesocket(sock);
 }
@@ -114,9 +157,27 @@ int main() {
     listen(server, 5);
 
     cout << "Server started...\n";
+    thread([]() {
+        while (true) {
+            string cmd;
+            getline(cin, cmd);
 
+            if (cmd == "info") {
+                lock_guard<mutex> lock(mtx);
+
+                cout << "===============\n";
+                for (auto& c : clients) {
+                    time_t now = time(0);
+                    cout << c.login << " - "
+                        << formatDuration(now - c.connectTime) << "\n";
+                }
+                cout << "===============\n";
+            }
+        }
+        }).detach();
     while (true) {
         SOCKET client = accept(server, NULL, NULL);
         thread(handleClient, client).detach();
     }
+   
 }
